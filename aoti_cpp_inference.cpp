@@ -43,20 +43,32 @@ int main(int argc, char* argv[])
     const std::string package_path = artifacts_dir + "/model.pt2";
 
     torch::inductor::AOTIModelPackageLoader loader(package_path);
+    // swap_constant_buffer()/free_inactive_constant_buffer() are only
+    // exposed on the runner, not directly on AOTIModelPackageLoader.
+    torch::inductor::AOTIModelContainerRunner* runner = loader.get_runner();
 
     auto io_data = load_tensor_dict(artifacts_dir + "/io_data/data.pt");
     const at::Tensor& x = io_data.at("x");
     const at::Tensor& orig_output = io_data.at("orig_output");
     const at::Tensor& updated_orig_output = io_data.at("updated_orig_output");
 
-    // 1. Load the initial weights and verify the AOTI inference output.
+    // 1. Load the initial weights into the inactive buffer, atomically swap
+    // it in, and free the now-inactive (old) buffer, then verify the AOTI
+    // inference output.
+    //
+    // load_constants() (not the lower-level update_constant_buffer()) is
+    // used because it translates the FQN keys (e.g. "fc.weight") to the
+    // engine's internal mangled constant names; update_constant_buffer()
+    // expects those internal names directly.
     auto initial_weights =
         load_tensor_dict(artifacts_dir + "/weights_initial/data.pt");
     loader.load_constants(initial_weights,
-                          /*use_inactive=*/false,
+                          /*use_inactive=*/true,
                           /*check_full_update=*/true,
                           /*user_managed=*/false,
-                          /*allow_h2d_copy=*/true);
+                          /*allow_h2d_copy=*/false);
+    runner->swap_constant_buffer();
+    runner->free_inactive_constant_buffer();
 
     auto initial_outputs = loader.run({x});
     TORCH_CHECK(
@@ -66,14 +78,16 @@ int main(int argc, char* argv[])
     std::cout << "Initial AOTI inference succeeded and matches PyTorch output."
               << std::endl;
 
-    // 2. Load the updated weights and re-verify the AOTI inference output.
+    // 2. Same safe swap for the updated weights, then re-verify the output.
     auto updated_weights =
         load_tensor_dict(artifacts_dir + "/weights_updated/data.pt");
     loader.load_constants(updated_weights,
-                          /*use_inactive=*/false,
+                          /*use_inactive=*/true,
                           /*check_full_update=*/true,
                           /*user_managed=*/false,
-                          /*allow_h2d_copy=*/true);
+                          /*allow_h2d_copy=*/false);
+    runner->swap_constant_buffer();
+    runner->free_inactive_constant_buffer();
 
     auto updated_outputs = loader.run({x});
     TORCH_CHECK(

@@ -62,6 +62,15 @@ def main():
 
     # Verify the compiled AOTI package matches PyTorch before handing it off
     # to the C++ side.
+    #
+    # NOTE: swap_constant_buffer()/free_inactive_constant_buffer() (needed for
+    # a safe double-buffered swap) are only exposed on the C++
+    # AOTIModelContainerRunner, not on the Python AOTIModelPackageLoader
+    # binding used by aoti_load_package(), so this Python check updates the
+    # active buffer directly via load_constants(), which (unlike the
+    # lower-level update_constant_buffer()) translates FQN keys (e.g.
+    # "fc.weight") to the engine's internal constant names. See
+    # aoti_cpp_inference.cpp for the safe swap.
     compiled_model = torch._inductor.aoti_load_package(package_path)
     print(f"AOTI engine constant FQNs: {compiled_model.get_constant_fqns()}")
     compiled_model.load_constants(weights_dict,
