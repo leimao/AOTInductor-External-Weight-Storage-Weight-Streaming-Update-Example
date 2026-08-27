@@ -24,9 +24,18 @@ OUTPUT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)),
 
 # torch::pickle_load in C++ hardcodes the archive's internal folder name to
 # "data", which only happens when the saved file itself is named "data.<ext>".
-def save_state_dict(state_dict, subdir):
+#
+# Weight dicts are saved on CPU: the C++ side updates the engine's inactive
+# GPU buffer with allow_h2d_copy=True, copying straight from host memory. If
+# we instead handed it GPU-resident tensors, the engine would still make its
+# own internal copy into the inactive buffer, leaving 3 GPU-resident copies
+# alive at once (our tensor + the new inactive buffer + the old active
+# buffer) instead of 2.
+def save_state_dict(state_dict, subdir, to_cpu=False):
     directory = os.path.join(OUTPUT_DIR, subdir)
     os.makedirs(directory, exist_ok=True)
+    if to_cpu:
+        state_dict = {k: v.cpu() for k, v in state_dict.items()}
     torch.save(state_dict, os.path.join(directory, "data.pt"))
 
 
@@ -58,7 +67,7 @@ def main():
         **dict(model.named_parameters()),
         **dict(model.named_buffers()),
     }
-    save_state_dict(weights_dict, "weights_initial")
+    save_state_dict(weights_dict, "weights_initial", to_cpu=True)
 
     # Verify the compiled AOTI package matches PyTorch before handing it off
     # to the C++ side.
@@ -91,7 +100,7 @@ def main():
         **dict(model.named_parameters()),
         **dict(model.named_buffers()),
     }
-    save_state_dict(updated_weights_dict, "weights_updated")
+    save_state_dict(updated_weights_dict, "weights_updated", to_cpu=True)
 
     # Verify the updated constants also match PyTorch.
     compiled_model.load_constants(updated_weights_dict,
